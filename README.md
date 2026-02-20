@@ -32,7 +32,7 @@ Voici la liste des différents fichiers proposés dans Ecologix :
 	</tr>
 	<tr>
 		<td><b>RADIODAT.PAS</b></td>
-		<td>Cette commande permet de calculer l''âge d''une roche par la loi de désintégration radioactive.</td>
+		<td>Cette commande permet de calculer l'âge d''une roche par la loi de désintégration radioactive.</td>
 	</tr>
 	<tr>
 		<td><b>SEISMIC.PAS</b></td>
