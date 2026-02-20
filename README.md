@@ -15,6 +15,10 @@ Voici la liste des différents fichiers proposés dans Ecologix :
 		<td>Cette commande permet de calculer l'anomalie de Bouguer.</td>
 	</tr>
 	<tr>
+		<td><b>MAGNETIC.PAS</b></td>
+		<td>Cette commande permet de calculer l'inclinaison du champ magnétique terrestre en fonction des coordonnées.</td> 
+	</tr>
+	<tr>
 		<td><b>SEISMIC.PAS</b></td>
 		<td>Cette commande permet de calculer la vitesse des ondes P et S en fonction de la densité et des modules élastiques.</td>
 	</tr>
