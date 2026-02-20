@@ -23,6 +23,10 @@ Voici la liste des différents fichiers proposés dans Ecologix :
 		<td>Cette commande permet de calculer le débit d'un fluide à travers un sol perméable selon la Loi de Darcy.</td>
 	</tr>
 	<tr>
+		<td><b>DEEPTEMP.PAS</b></td>
+		<td>Cette commande permet de calculer la température en fonction de la profondeur en utilisant un gradient constant (Gradiant Géothermique).</td>
+	</tr>
+	<tr>
 		<td><b>MAGNETIC.PAS</b></td>
 		<td>Cette commande permet de calculer l'inclinaison du champ magnétique terrestre en fonction des coordonnées.</td> 
 	</tr>
