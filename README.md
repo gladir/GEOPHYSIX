@@ -11,6 +11,10 @@ Voici la liste des différents fichiers proposés dans Ecologix :
 		<th>Description</th>
 	</tr>
 	<tr>
+		<td><b>ATTEN.PAS</b></td>
+		<td>Cette commande permet de calculer l'atténuation d'une onde sismique en fonction de la distance.</td>
+	</tr>
+	<tr>
 		<td><b>BOUGUER.PAS</b></td>
 		<td>Cette commande permet de calculer l'anomalie de Bouguer.</td>
 	</tr>
