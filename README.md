@@ -14,6 +14,10 @@ Voici la liste des différents fichiers proposés dans Ecologix :
 		<td><b>BOUGUER.PAS</b></td>
 		<td>Cette commande permet de calculer l'anomalie de Bouguer.</td>
 	</tr>
+	<tr>
+		<td><b>SEISMIC.PAS</b></td>
+		<td>Cette commande permet de calculer la vitesse des ondes P et S en fonction de la densité et des modules élastiques.</td>
+	</tr>
 </table>
 
 <h2>Compilation</h2>
