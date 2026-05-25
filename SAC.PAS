@@ -19,6 +19,8 @@
 
 Program SAC;
 
+{$E+,N+}
+
 Uses
  Dos;
 
@@ -33,6 +35,7 @@ Const
 
 Type
  TSampleArray = Array[1..MaxSamples] Of Single;
+ PSampleArray = ^TSampleArray;
  TTrace = Record
   Used:Boolean;
   FileName:String;
@@ -40,20 +43,30 @@ Type
   Delta,B,E,O,A:Single;
   Kstnm,Kcmpnm:String[8];
   Data:TSampleArray;
+  FftRe,FftIm:PSampleArray;
+  FftN:LongInt;
+  FftDelta:Single;
+ End;
+ PTrace = ^TTrace;
+ PTraceNode = ^TTraceNode;
+ TTraceNode = Record
+  Trace:TTrace;
+  Next:PTraceNode;
  End;
  TTokens = Array[1..MaxTokens] Of String;
  TBBVar = Record
   Name,Value:String;
  End;
+ PHistNode = ^THistNode;
+ THistNode = Record
+  Line:String;
+  Next:PHistNode;
+ End;
 
 Var
- Traces:Array[1..MaxTraces] Of TTrace;
- Saved:Array[1..MaxTraces] Of TTrace;
- FftRe,FftIm:Array[1..MaxTraces] Of TSampleArray;
- FftN:Array[1..MaxTraces] Of LongInt;
- FftDelta:Array[1..MaxTraces] Of Single;
+ Traces,Saved:PTraceNode;
  BB:Array[1..MaxBB] Of TBBVar;
- Hist:Array[1..MaxHist] Of String;
+ HistFirst,HistLast:PHistNode;
  BBCount,HistCount:Integer;
  Running,InSub:Boolean;
  CutOn:Boolean;
@@ -151,22 +164,89 @@ Begin
 End;
 
 Procedure AddHistory(S:String);
+Var P,Old:PHistNode;
 Begin
+ New(P); P^.Line:=S; P^.Next:=Nil;
+ If HistFirst=Nil Then HistFirst:=P Else HistLast^.Next:=P;
+ HistLast:=P;
  If HistCount<MaxHist Then Inc(HistCount)
   Else Begin
-   Move(Hist[2],Hist[1],SizeOf(Hist[1])*(MaxHist-1));
-   HistCount:=MaxHist;
+   Old:=HistFirst;
+   HistFirst:=HistFirst^.Next;
+   If HistFirst=Nil Then HistLast:=Nil;
+   Dispose(Old);
   End;
- Hist[HistCount]:=S;
+End;
+
+Procedure ShowHistory;
+Var P:PHistNode; I:Integer;
+Begin
+ P:=HistFirst; I:=1;
+ While P<>Nil Do Begin
+  WriteLn(I:3,' ',P^.Line);
+  P:=P^.Next; Inc(I);
+ End;
 End;
 
 Procedure InitTrace(Var Tr:TTrace);
 Var I:Integer;
 Begin
+ If Tr.FftRe<>Nil Then Begin Dispose(Tr.FftRe); Tr.FftRe:=Nil; End;
+ If Tr.FftIm<>Nil Then Begin Dispose(Tr.FftIm); Tr.FftIm:=Nil; End;
  Tr.Used:=False; Tr.FileName:='';
  Tr.Npts:=0; Tr.Delta:=1.0; Tr.B:=0.0; Tr.E:=0.0; Tr.O:=0.0; Tr.A:=-12345.0;
  Tr.Kstnm:='-12345'; Tr.Kcmpnm:='-12345';
+ Tr.FftN:=0; Tr.FftDelta:=1.0;
  For I:=1 To MaxSamples Do Tr.Data[I]:=0.0;
+End;
+
+Function TraceAt(Head:PTraceNode; Index:Integer):PTrace;
+Var P:PTraceNode; I:Integer;
+Begin
+ P:=Head; I:=1;
+ While (P<>Nil) And (I<Index) Do Begin P:=P^.Next; Inc(I); End;
+ If P=Nil Then TraceAt:=Nil Else TraceAt:=Addr(P^.Trace);
+End;
+
+Function TracePtr(Index:Integer):PTrace;
+Begin
+ TracePtr:=TraceAt(Traces,Index);
+End;
+
+Function SavedPtr(Index:Integer):PTrace;
+Begin
+ SavedPtr:=TraceAt(Saved,Index);
+End;
+
+Procedure CreateTraceList(Var Head:PTraceNode);
+Var I:Integer; P,Q:PTraceNode;
+Begin
+ Head:=Nil; Q:=Nil;
+ For I:=1 To MaxTraces Do Begin
+  New(P); P^.Trace.FftRe:=Nil; P^.Trace.FftIm:=Nil; InitTrace(P^.Trace); P^.Next:=Nil;
+  If Head=Nil Then Head:=P Else Q^.Next:=P;
+  Q:=P;
+ End;
+End;
+
+Procedure CopyTrace(Var Dest:TTrace; Var Src:TTrace);
+Var I:Integer;
+Begin
+ If Dest.FftRe<>Nil Then Begin Dispose(Dest.FftRe); Dest.FftRe:=Nil; End;
+ If Dest.FftIm<>Nil Then Begin Dispose(Dest.FftIm); Dest.FftIm:=Nil; End;
+ Dest.Used:=Src.Used; Dest.FileName:=Src.FileName; Dest.Npts:=Src.Npts;
+ Dest.Delta:=Src.Delta; Dest.B:=Src.B; Dest.E:=Src.E; Dest.O:=Src.O; Dest.A:=Src.A;
+ Dest.Kstnm:=Src.Kstnm; Dest.Kcmpnm:=Src.Kcmpnm;
+ Dest.FftN:=Src.FftN; Dest.FftDelta:=Src.FftDelta;
+ For I:=1 To MaxSamples Do Dest.Data[I]:=Src.Data[I];
+ If Src.FftRe<>Nil Then Begin
+  New(Dest.FftRe);
+  For I:=1 To MaxSamples Do Dest.FftRe^[I]:=Src.FftRe^[I];
+ End;
+ If Src.FftIm<>Nil Then Begin
+  New(Dest.FftIm);
+  For I:=1 To MaxSamples Do Dest.FftIm^[I]:=Src.FftIm^[I];
+ End;
 End;
 
 Procedure UpdateEndTime(Var Tr:TTrace);
@@ -188,35 +268,52 @@ Begin
 End;
 
 Function FirstFreeTrace:Integer;
-Var I:Integer;
+Var I:Integer; P:PTrace;
 Begin
  FirstFreeTrace:=0;
- For I:=1 To MaxTraces Do If Not Traces[I].Used Then Begin FirstFreeTrace:=I; Exit; End;
+ For I:=1 To MaxTraces Do Begin
+  P:=TracePtr(I);
+  If (P<>Nil) And Not P^.Used Then Begin FirstFreeTrace:=I; Exit; End;
+ End;
 End;
 
 Function TraceCount:Integer;
-Var I,N:Integer;
+Var I,N:Integer; P:PTrace;
 Begin
  N:=0;
- For I:=1 To MaxTraces Do If Traces[I].Used Then Inc(N);
+ For I:=1 To MaxTraces Do Begin
+  P:=TracePtr(I);
+  If (P<>Nil) And P^.Used Then Inc(N);
+ End;
  TraceCount:=N;
 End;
 
 Procedure ClearTraces;
-Var I:Integer;
+Var I:Integer; P:PTrace;
 Begin
- For I:=1 To MaxTraces Do InitTrace(Traces[I]);
+ For I:=1 To MaxTraces Do Begin
+  P:=TracePtr(I);
+  If P<>Nil Then InitTrace(P^);
+ End;
 End;
 
 Procedure CommitTraces;
+Var I:Integer; P,S:PTrace;
 Begin
- Saved:=Traces;
+ For I:=1 To MaxTraces Do Begin
+  P:=TracePtr(I); S:=SavedPtr(I);
+  If (P<>Nil) And (S<>Nil) Then CopyTrace(S^,P^);
+ End;
  Say('Trace state committed.');
 End;
 
 Procedure RollbackTraces;
+Var I:Integer; P,S:PTrace;
 Begin
- Traces:=Saved;
+ For I:=1 To MaxTraces Do Begin
+  P:=TracePtr(I); S:=SavedPtr(I);
+  If (P<>Nil) And (S<>Nil) Then CopyTrace(P^,S^);
+ End;
  Say('Trace state restored.');
 End;
 
@@ -274,29 +371,57 @@ End;
 
 Function IsCommandKnown(Cmd:String):Boolean;
 Const
- L1='|3C|ABOUT|ABS|ADD|ADDF|APK|ARRAYMAP|AXES|BANDPASS|BANDREJ|BBFK|BEAM|BEGINDEVICES|BEGINFRAME|BEGINWINDOW|BENIOFF|BINOPERR|BORDER|CAPF|';
- L2='|CHNHDR|CHPF|COLOR|COMCOR|CONTOUR|CONVERT|CONVOLVE|COPYHDR|CORRELATE|COMMIT|RECALLTRACE|ROLLBACK|CUT|CUTERR|CUTIM|DATAGEN|';
- L3='|DECIMATE|DELETECHANNEL|DIF|DIV|DIVF|DIVOMEGA|ECHO|ENDDEVICES|ENDFRAME|ENVELOPE|ERASE|EVALUATE|EXP|EXP10|FFT|FILEID|FILENUMBER|';
- L4='|FG|FILTERDESIGN|FIR|FLOOR|FUNCGEN|GETBB|GRAYSCALE|GRID|GTEXT|HANNING|HELP|HIGHPASS|HILBERT|HISTORY|IFFT|IMAGE|INICM|INSTALLMACRO|';
- L5='|INT|INTERPOLATE|KEEPAM|KHRONHITE|LINE|LINEFIT|LINLIN|LINLOG|LISTHDR|LOAD|LOADCTABLE|LOG|LOG10|LOGLAB|LOGLIN|LOGLOG|LOWPASS|';
- L6='|MACRO|MAP|MARKPTP|MARKTIMES|MARKVALUE|MAT|MATHOP|MERGE|MESSAGE|MTW|MUL|MULF|MULOMEGA|PLOTC|NULL|OAPF|OHPF|PAUSE|';
- L7='|PICKAUTHOR|PICKPHASE|PICKPREFS|PICKS|PLABEL|PLOT|PLOT1|PLOT2|PLOTALPHA|PLOTCTABLE|PLOTDY|PLOTPK|PLOTPKTABLE|PLOTPM|PLOTSP|';
- L8='|PLOTXY|PRINT|PRINTHELP|PRODUCTION|QDP|QUANTIZE|QUIT|QUITSUB|READ|READBBF|READCSS|READDB|READERR|READGSE|READHDR|READSDD|READSP|';
- L9='|READSUDS|READTABLE|REPORT|REVERSE|RGLITCHES|RMEAN|RMS|ROTATE|RQ|RTREND|SAVEIMG|SCALLOP|SETBB|SETDEVICE|SETMACRO|SGF|SMOOTH|';
- L10='|SONOGRAM|SORT|SPECTROGRAM|SQR|SQRT|STRETCH|SUB|SUBF|SYMBOL|SYNCHRONIZE|SYSTEMCOMMAND|TAPER|TICKS|TITLE|TRACE|TRANSCRIPT|';
- L11='|TRANSFER|TRAVELTIME|TSIZE|UNSETBB|UNWRAP|VSPACE|WAIT|WHITEN|WHPF|WIDTH|WIENER|WILD|WINDOW|WRITE|WRITEBBF|WRITECSS|WRITEGSE|';
- L12='|WRITEHDR|WRITESDD|WRITESP|XDIV|XFUDGE|XFULL|XGRID|XLABEL|XLIM|XLIN|XLOG|XVPORT|YDIV|YFUDGE|YFULL|YGRID|YLABEL|YLIM|YLIN|';
- L13='|YLOG|YVPORT|ZCOLORS|ZLABELS|ZLEVELS|ZLINES|ZTICKS|ADDSTACK|CHANGESTACK|DELETESTACK|DELTACHECK|DISTANCEAXIS|DISTANCEWINDOW|';
- L14='|GLOBALSTACK|INCREMENTSTACK|LISTSTACK|PLOTRECORDSECTION|PLOTSTACK|SUMSTACK|TIMEAXIS|TIMEWINDOW|SSSTRAVELTIME|VELOCITYMODEL|';
- L15='|VELOCITYROSET|WRITESTACK|ZEROSTACK|COR|MEM|MLM|PDS|PLOTCOR|PLOTPE|PLOTSPE|READCOR|WRITECOR|WRITESPE|';
-Var S:String;
+ Command:Array[0..241] Of String[20]=(
+  '3C','ABOUT','ABS','ADD','ADDF','APK',
+  'ARRAYMAP','AXES','BANDPASS','BANDREJ','BBFK','BEAM',
+  'BEGINDEVICES','BEGINFRAME','BEGINWINDOW','BENIOFF','BINOPERR','BORDER',
+  'CAPF','CHNHDR','CHPF','COLOR','COMCOR','CONTOUR',
+  'CONVERT','CONVOLVE','COPYHDR','CORRELATE','COMMIT','RECALLTRACE',
+  'ROLLBACK','CUT','CUTERR','CUTIM','DATAGEN','DECIMATE',
+  'DELETECHANNEL','DIF','DIV','DIVF','DIVOMEGA','ECHO',
+  'ENDDEVICES','ENDFRAME','ENVELOPE','ERASE','EVALUATE','EXP',
+  'EXP10','FFT','FILEID','FILENUMBER','FG','FILTERDESIGN',
+  'FIR','FLOOR','FUNCGEN','GETBB','GRAYSCALE','GRID',
+  'GTEXT','HANNING','HELP','HIGHPASS','HILBERT','HISTORY',
+  'IFFT','IMAGE','INICM','INSTALLMACRO','INT','INTERPOLATE',
+  'KEEPAM','KHRONHITE','LINE','LINEFIT','LINLIN','LINLOG',
+  'LISTHDR','LOAD','LOADCTABLE','LOG','LOG10','LOGLAB',
+  'LOGLIN','LOGLOG','LOWPASS','MACRO','MAP','MARKPTP',
+  'MARKTIMES','MARKVALUE','MAT','MATHOP','MERGE','MESSAGE',
+  'MTW','MUL','MULF','MULOMEGA','PLOTC','NULL',
+  'OAPF','OHPF','PAUSE','PICKAUTHOR','PICKPHASE','PICKPREFS',
+  'PICKS','PLABEL','PLOT','PLOT1','PLOT2','PLOTALPHA',
+  'PLOTCTABLE','PLOTDY','PLOTPK','PLOTPKTABLE','PLOTPM','PLOTSP',
+  'PLOTXY','PRINT','PRINTHELP','PRODUCTION','QDP','QUANTIZE',
+  'QUIT','QUITSUB','READ','READBBF','READCSS','READDB',
+  'READERR','READGSE','READHDR','READSDD','READSP','READSUDS',
+  'READTABLE','REPORT','REVERSE','RGLITCHES','RMEAN','RMS',
+  'ROTATE','RQ','RTREND','SAVEIMG','SCALLOP','SETBB',
+  'SETDEVICE','SETMACRO','SGF','SMOOTH','SONOGRAM','SORT',
+  'SPECTROGRAM','SQR','SQRT','STRETCH','SUB','SUBF',
+  'SYMBOL','SYNCHRONIZE','SYSTEMCOMMAND','TAPER','TICKS','TITLE',
+  'TRACE','TRANSCRIPT','TRANSFER','TRAVELTIME','TSIZE','UNSETBB',
+  'UNWRAP','VSPACE','WAIT','WHITEN','WHPF','WIDTH',
+  'WIENER','WILD','WINDOW','WRITE','WRITEBBF','WRITECSS',
+  'WRITEGSE','WRITEHDR','WRITESDD','WRITESP','XDIV','XFUDGE',
+  'XFULL','XGRID','XLABEL','XLIM','XLIN','XLOG',
+  'XVPORT','YDIV','YFUDGE','YFULL','YGRID','YLABEL',
+  'YLIM','YLIN','YLOG','YVPORT','ZCOLORS','ZLABELS',
+  'ZLEVELS','ZLINES','ZTICKS','ADDSTACK','CHANGESTACK','DELETESTACK',
+  'DELTACHECK','DISTANCEAXIS','DISTANCEWINDOW','GLOBALSTACK','INCREMENTSTACK','LISTSTACK',
+  'PLOTRECORDSECTION','PLOTSTACK','SUMSTACK','TIMEAXIS','TIMEWINDOW','SSSTRAVELTIME',
+  'VELOCITYMODEL','VELOCITYROSET','WRITESTACK','ZEROSTACK','COR','MEM',
+  'MLM','PDS','PLOTCOR','PLOTPE','PLOTSPE','READCOR',
+  'WRITECOR','WRITESPE');
+Var I:Integer;
 Begin
- Cmd:=UpCaseStr(Cmd); S:='|'+Cmd+'|';
- IsCommandKnown:=(Pos(S,L1)>0) Or (Pos(S,L2)>0) Or (Pos(S,L3)>0) Or
-  (Pos(S,L4)>0) Or (Pos(S,L5)>0) Or (Pos(S,L6)>0) Or
-  (Pos(S,L7)>0) Or (Pos(S,L8)>0) Or (Pos(S,L9)>0) Or
-  (Pos(S,L10)>0) Or (Pos(S,L11)>0) Or (Pos(S,L12)>0) Or
-  (Pos(S,L13)>0) Or (Pos(S,L14)>0) Or (Pos(S,L15)>0);
+ Cmd:=UpCaseStr(Cmd);
+ IsCommandKnown:=False;
+ For I:=0 To High(Command) Do
+  If Cmd=Command[I] Then Begin
+   IsCommandKnown:=True;
+   Exit;
+  End;
 End;
 
 Procedure WriteCommandList;
@@ -333,9 +458,12 @@ Type TFloatHeader = Array[0..69] Of Single;
      TIntHeader = Array[0..39] Of LongInt;
 Var F:File; Floats:TFloatHeader; Ints:TIntHeader; Buf:Array[1..192] Of Byte;
     Got,Idx:Integer; N,I:LongInt; Code:Integer;
+    Tr:PTrace;
 Begin
  Idx:=FirstFreeTrace;
  If Idx=0 Then Begin Say('No free trace slots.'); Exit; End;
+ Tr:=TracePtr(Idx);
+ If Tr=Nil Then Exit;
  Assign(F,FileName); {$I-} Reset(F,1); {$I+}
  Code:=IOResult;
  If Code<>0 Then Begin
@@ -351,35 +479,38 @@ Begin
  N:=Ints[9];
  If N<0 Then N:=0;
  If N>MaxSamples Then Begin Say('Trace truncated to internal MaxSamples.'); N:=MaxSamples; End;
- InitTrace(Traces[Idx]); Traces[Idx].Used:=True; Traces[Idx].FileName:=FileName;
- Traces[Idx].Delta:=Floats[0]; Traces[Idx].B:=Floats[5]; Traces[Idx].E:=Floats[6];
- Traces[Idx].O:=Floats[7]; Traces[Idx].A:=Floats[8]; Traces[Idx].Npts:=N;
+ InitTrace(Tr^); Tr^.Used:=True; Tr^.FileName:=FileName;
+ Tr^.Delta:=Floats[0]; Tr^.B:=Floats[5]; Tr^.E:=Floats[6];
+ Tr^.O:=Floats[7]; Tr^.A:=Floats[8]; Tr^.Npts:=N;
  For I:=1 To N Do Begin
-  BlockRead(F,Traces[Idx].Data[I],SizeOf(Single),Got);
-  If Got<>SizeOf(Single) Then Begin Traces[Idx].Npts:=I-1; Break; End;
+  BlockRead(F,Tr^.Data[I],SizeOf(Single),Got);
+  If Got<>SizeOf(Single) Then Begin Tr^.Npts:=I-1; Break; End;
  End;
  Close(F);
- UpdateEndTime(Traces[Idx]);
+ UpdateEndTime(Tr^);
  Say('Read '+FileName+' into trace '+Chr(Ord('0')+Idx)+'.');
 End;
 
 Procedure ReadAscii(FileName:String);
 Var F:Text; S:String; V:Single; Code:Integer; Idx:Integer; N:LongInt;
+    Tr:PTrace;
 Begin
  Idx:=FirstFreeTrace;
  If Idx=0 Then Begin Say('No free trace slots.'); Exit; End;
+ Tr:=TracePtr(Idx);
+ If Tr=Nil Then Exit;
  Assign(F,FileName); {$I-} Reset(F); {$I+}
  Code:=IOResult;
  If Code<>0 Then Begin Say('Cannot open '+FileName); Exit; End;
- InitTrace(Traces[Idx]); Traces[Idx].Used:=True; Traces[Idx].FileName:=FileName; N:=0;
+ InitTrace(Tr^); Tr^.Used:=True; Tr^.FileName:=FileName; N:=0;
  While Not Eof(F) And (N<MaxSamples) Do Begin
   ReadLn(F,S); S:=TrimStr(S);
   If S<>'' Then Begin
-   V:=ToReal(S,0.0); Inc(N); Traces[Idx].Data[N]:=V;
+   V:=ToReal(S,0.0); Inc(N); Tr^.Data[N]:=V;
   End;
  End;
  Close(F);
- Traces[Idx].Npts:=N; UpdateEndTime(Traces[Idx]);
+ Tr^.Npts:=N; UpdateEndTime(Tr^);
  Say('Read ASCII '+FileName+' into trace '+Chr(Ord('0')+Idx)+'.');
 End;
 
@@ -388,42 +519,48 @@ Type TFloatHeader = Array[0..69] Of Single;
      TIntHeader = Array[0..39] Of LongInt;
 Var F:File; Floats:TFloatHeader; Ints:TIntHeader; Buf:Array[1..192] Of Byte;
     I:Integer; L:LongInt; DepMin,DepMax,DepMen:Single;
+    Tr:PTrace;
 Begin
- If (Idx<1) Or (Idx>MaxTraces) Or Not Traces[Idx].Used Then Begin Say('No such trace.'); Exit; End;
+ Tr:=TracePtr(Idx);
+ If (Idx<1) Or (Idx>MaxTraces) Or (Tr=Nil) Or Not Tr^.Used Then Begin Say('No such trace.'); Exit; End;
  For I:=0 To 69 Do Floats[I]:=-12345.0;
  For I:=0 To 39 Do Ints[I]:=-12345;
  For I:=1 To 192 Do Buf[I]:=32;
- UpdateStats(Traces[Idx],DepMin,DepMax,DepMen);
- Floats[0]:=Traces[Idx].Delta; Floats[1]:=DepMin; Floats[2]:=DepMax; Floats[3]:=DepMen;
- Floats[5]:=Traces[Idx].B; Floats[6]:=Traces[Idx].E; Floats[7]:=Traces[Idx].O; Floats[8]:=Traces[Idx].A;
- Ints[6]:=6; Ints[9]:=Traces[Idx].Npts; Ints[15]:=1;
+ UpdateStats(Tr^,DepMin,DepMax,DepMen);
+ Floats[0]:=Tr^.Delta; Floats[1]:=DepMin; Floats[2]:=DepMax; Floats[3]:=DepMen;
+ Floats[5]:=Tr^.B; Floats[6]:=Tr^.E; Floats[7]:=Tr^.O; Floats[8]:=Tr^.A;
+ Ints[6]:=6; Ints[9]:=Tr^.Npts; Ints[15]:=1;
  Assign(F,FileName); {$I-} Rewrite(F,1); {$I+}
  If IOResult<>0 Then Begin Say('Cannot write '+FileName); Exit; End;
  BlockWrite(F,Floats,SizeOf(Floats));
  BlockWrite(F,Ints,SizeOf(Ints));
  BlockWrite(F,Buf,SizeOf(Buf));
- For L:=1 To Traces[Idx].Npts Do BlockWrite(F,Traces[Idx].Data[L],SizeOf(Single));
+ For L:=1 To Tr^.Npts Do BlockWrite(F,Tr^.Data[L],SizeOf(Single));
  Close(F);
  Say('Wrote '+FileName+'.');
 End;
 
 Procedure WriteAscii(FileName:String; Idx:Integer);
 Var F:Text; I:LongInt;
+    Tr:PTrace;
 Begin
- If (Idx<1) Or (Idx>MaxTraces) Or Not Traces[Idx].Used Then Begin Say('No such trace.'); Exit; End;
+ Tr:=TracePtr(Idx);
+ If (Idx<1) Or (Idx>MaxTraces) Or (Tr=Nil) Or Not Tr^.Used Then Begin Say('No such trace.'); Exit; End;
  Assign(F,FileName); {$I-} Rewrite(F); {$I+}
  If IOResult<>0 Then Begin Say('Cannot write '+FileName); Exit; End;
- For I:=1 To Traces[Idx].Npts Do WriteLn(F,Traces[Idx].Data[I]:0:8);
+ For I:=1 To Tr^.Npts Do WriteLn(F,Tr^.Data[I]:0:8);
  Close(F);
  Say('Wrote ASCII '+FileName+'.');
 End;
 
 Procedure ForEachTraceMath(Op:String; Arg:Single);
-Var T:Integer; I:LongInt; X:Single;
+Var T:Integer; I:LongInt; X:Single; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  For I:=1 To Traces[T].Npts Do Begin
-   X:=Traces[T].Data[I];
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  For I:=1 To Tr^.Npts Do Begin
+   X:=Tr^.Data[I];
    If Op='ABS' Then X:=Abs(X)
     Else If Op='ADD' Then X:=X+Arg
     Else If Op='SUB' Then X:=X-Arg
@@ -438,293 +575,349 @@ Begin
     Else If Op='INT' Then X:=Trunc(X)
     Else If Op='FLOOR' Then X:=Int(X)
     Else If Op='REVERSE' Then X:=-X;
-   Traces[T].Data[I]:=X;
+   Tr^.Data[I]:=X;
   End;
+ End;
  End;
  Say(Op+' done.');
 End;
 
 Procedure BinaryFileOp(Op,FileName:String);
-Var Idx,T:Integer; Other:TTrace; I,N:LongInt;
+Var Idx,T:Integer; Other:TTrace; I,N:LongInt; Tr,Scratch:PTrace;
 Begin
  Idx:=FirstFreeTrace;
  If Idx=0 Then Begin Say('No scratch slot for file operation.'); Exit; End;
  ReadSacBinary(FileName);
- If Not Traces[Idx].Used Then Exit;
- Other:=Traces[Idx]; InitTrace(Traces[Idx]);
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  N:=Traces[T].Npts; If Other.Npts<N Then N:=Other.Npts;
+ Scratch:=TracePtr(Idx);
+ If (Scratch=Nil) Or Not Scratch^.Used Then Exit;
+ Other:=Scratch^; InitTrace(Scratch^);
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  N:=Tr^.Npts; If Other.Npts<N Then N:=Other.Npts;
   For I:=1 To N Do Begin
-   If Op='ADDF' Then Traces[T].Data[I]:=Traces[T].Data[I]+Other.Data[I]
-    Else If Op='SUBF' Then Traces[T].Data[I]:=Traces[T].Data[I]-Other.Data[I]
-    Else If Op='MULF' Then Traces[T].Data[I]:=Traces[T].Data[I]*Other.Data[I]
-    Else If Op='DIVF' Then If Other.Data[I]<>0 Then Traces[T].Data[I]:=Traces[T].Data[I]/Other.Data[I];
+   If Op='ADDF' Then Tr^.Data[I]:=Tr^.Data[I]+Other.Data[I]
+    Else If Op='SUBF' Then Tr^.Data[I]:=Tr^.Data[I]-Other.Data[I]
+    Else If Op='MULF' Then Tr^.Data[I]:=Tr^.Data[I]*Other.Data[I]
+    Else If Op='DIVF' Then If Other.Data[I]<>0 Then Tr^.Data[I]:=Tr^.Data[I]/Other.Data[I];
   End;
+ End;
  End;
  Say(Op+' done.');
 End;
 
 Procedure RemoveMean;
-Var T:Integer; I:LongInt; MinV,MaxV,MeanV:Single;
+Var T:Integer; I:LongInt; MinV,MaxV,MeanV:Single; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  UpdateStats(Traces[T],MinV,MaxV,MeanV);
-  For I:=1 To Traces[T].Npts Do Traces[T].Data[I]:=Traces[T].Data[I]-MeanV;
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  UpdateStats(Tr^,MinV,MaxV,MeanV);
+  For I:=1 To Tr^.Npts Do Tr^.Data[I]:=Tr^.Data[I]-MeanV;
+ End;
  End;
  Say('RMEAN done.');
 End;
 
 Procedure RemoveTrend;
-Var T:Integer; I,N:LongInt; SX,SY,SXX,SXY,A,B,Den,X:Real;
+Var T:Integer; I,N:LongInt; SX,SY,SXX,SXY,A,B,Den,X:Real; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  N:=Traces[T].Npts; If N<2 Then Continue;
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  N:=Tr^.Npts; If N<2 Then Continue;
   SX:=0; SY:=0; SXX:=0; SXY:=0;
   For I:=1 To N Do Begin
-   X:=I; SX:=SX+X; SY:=SY+Traces[T].Data[I]; SXX:=SXX+X*X; SXY:=SXY+X*Traces[T].Data[I];
+   X:=I; SX:=SX+X; SY:=SY+Tr^.Data[I]; SXX:=SXX+X*X; SXY:=SXY+X*Tr^.Data[I];
   End;
   Den:=N*SXX-SX*SX;
   If Den<>0 Then Begin
    B:=(N*SXY-SX*SY)/Den; A:=(SY-B*SX)/N;
-   For I:=1 To N Do Traces[T].Data[I]:=Traces[T].Data[I]-(A+B*I);
+   For I:=1 To N Do Tr^.Data[I]:=Tr^.Data[I]-(A+B*I);
   End;
+ End;
  End;
  Say('RTREND/LINEFIT done.');
 End;
 
 Procedure Differentiate;
-Var T:Integer; I:LongInt; Prev,Cur,D:Single;
+Var T:Integer; I:LongInt; Prev,Cur,D:Single; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used And (Traces[T].Npts>1) Then Begin
-  D:=Traces[T].Delta; If D=0 Then D:=1;
-  Prev:=Traces[T].Data[1];
-  For I:=2 To Traces[T].Npts Do Begin
-   Cur:=Traces[T].Data[I];
-   Traces[T].Data[I-1]:=(Cur-Prev)/D;
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used And (Tr^.Npts>1) Then Begin
+  D:=Tr^.Delta; If D=0 Then D:=1;
+  Prev:=Tr^.Data[1];
+  For I:=2 To Tr^.Npts Do Begin
+   Cur:=Tr^.Data[I];
+   Tr^.Data[I-1]:=(Cur-Prev)/D;
    Prev:=Cur;
   End;
-  Dec(Traces[T].Npts); UpdateEndTime(Traces[T]);
+  Dec(Tr^.Npts); UpdateEndTime(Tr^);
+ End;
  End;
  Say('DIF done.');
 End;
 
 Procedure Integrate;
-Var T:Integer; I:LongInt; Sum,D:Single;
+Var T:Integer; I:LongInt; Sum,D:Single; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  Sum:=0; D:=Traces[T].Delta;
-  For I:=1 To Traces[T].Npts Do Begin
-   Sum:=Sum+Traces[T].Data[I]*D; Traces[T].Data[I]:=Sum;
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  Sum:=0; D:=Tr^.Delta;
+  For I:=1 To Tr^.Npts Do Begin
+   Sum:=Sum+Tr^.Data[I]*D; Tr^.Data[I]:=Sum;
   End;
+ End;
  End;
  Say('INT integration done.');
 End;
 
 Procedure Smooth(Width:Integer);
-Var T:Integer; I,J,C,N:LongInt; Tmp:TSampleArray; Sum:Real;
+Var T:Integer; I,J,C,N:LongInt; Tmp:TSampleArray; Sum:Real; Tr:PTrace;
 Begin
  If Width<1 Then Width:=3;
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  N:=Traces[T].Npts;
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  N:=Tr^.Npts;
   For I:=1 To N Do Begin
    Sum:=0; C:=0;
-   For J:=I-Width To I+Width Do If (J>=1) And (J<=N) Then Begin Sum:=Sum+Traces[T].Data[J]; Inc(C); End;
-   If C>0 Then Tmp[I]:=Sum/C Else Tmp[I]:=Traces[T].Data[I];
+   For J:=I-Width To I+Width Do If (J>=1) And (J<=N) Then Begin Sum:=Sum+Tr^.Data[J]; Inc(C); End;
+   If C>0 Then Tmp[I]:=Sum/C Else Tmp[I]:=Tr^.Data[I];
   End;
-  For I:=1 To N Do Traces[T].Data[I]:=Tmp[I];
+  For I:=1 To N Do Tr^.Data[I]:=Tmp[I];
+ End;
  End;
  Say('SMOOTH done.');
 End;
 
 Procedure Taper(Pct:Single);
-Var T:Integer; I,N,M:LongInt; W:Single;
+Var T:Integer; I,N,M:LongInt; W:Single; Tr:PTrace;
 Begin
  If Pct<=0 Then Pct:=0.05;
  If Pct>0.5 Then Pct:=0.5;
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  N:=Traces[T].Npts; M:=Trunc(N*Pct);
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  N:=Tr^.Npts; M:=Trunc(N*Pct);
   If M<1 Then Continue;
   For I:=1 To M Do Begin
    W:=0.5*(1.0-Cos(PiValue*(I-1)/M));
-   Traces[T].Data[I]:=Traces[T].Data[I]*W;
-   Traces[T].Data[N-I+1]:=Traces[T].Data[N-I+1]*W;
+   Tr^.Data[I]:=Tr^.Data[I]*W;
+   Tr^.Data[N-I+1]:=Tr^.Data[N-I+1]*W;
   End;
+ End;
  End;
  Say('TAPER/HANNING done.');
 End;
 
 Procedure Decimate(Factor:Integer);
-Var T:Integer; I,N:LongInt;
+Var T:Integer; I,N:LongInt; Tr:PTrace;
 Begin
  If Factor<2 Then Factor:=2;
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
   N:=0; I:=1;
-  While I<=Traces[T].Npts Do Begin Inc(N); Traces[T].Data[N]:=Traces[T].Data[I]; I:=I+Factor; End;
-  Traces[T].Npts:=N; Traces[T].Delta:=Traces[T].Delta*Factor; UpdateEndTime(Traces[T]);
+  While I<=Tr^.Npts Do Begin Inc(N); Tr^.Data[N]:=Tr^.Data[I]; I:=I+Factor; End;
+  Tr^.Npts:=N; Tr^.Delta:=Tr^.Delta*Factor; UpdateEndTime(Tr^);
+ End;
  End;
  Say('DECIMATE done.');
 End;
 
 Procedure CutTraces(BegT,EndT:Single);
-Var T:Integer; I,S1,S2,N:LongInt;
+Var T:Integer; I,S1,S2,N:LongInt; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  S1:=Trunc((BegT-Traces[T].B)/Traces[T].Delta)+1;
-  S2:=Trunc((EndT-Traces[T].B)/Traces[T].Delta)+1;
-  If S1<1 Then S1:=1; If S2>Traces[T].Npts Then S2:=Traces[T].Npts;
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  S1:=Trunc((BegT-Tr^.B)/Tr^.Delta)+1;
+  S2:=Trunc((EndT-Tr^.B)/Tr^.Delta)+1;
+  If S1<1 Then S1:=1; If S2>Tr^.Npts Then S2:=Tr^.Npts;
   If (S2<S1) Then Begin
    If CutErrMode='FATAL' Then Running:=False Else Say('CUT outside trace.');
   End Else Begin
    N:=0;
-   For I:=S1 To S2 Do Begin Inc(N); Traces[T].Data[N]:=Traces[T].Data[I]; End;
-   Traces[T].Npts:=N; Traces[T].B:=BegT; UpdateEndTime(Traces[T]);
+   For I:=S1 To S2 Do Begin Inc(N); Tr^.Data[N]:=Tr^.Data[I]; End;
+   Tr^.Npts:=N; Tr^.B:=BegT; UpdateEndTime(Tr^);
   End;
+ End;
  End;
  Say('CUT applied.');
 End;
 
 Procedure SimpleLowPass(Alpha:Single);
-Var T:Integer; I:LongInt; Y:Single;
+Var T:Integer; I:LongInt; Y:Single; Tr:PTrace;
 Begin
  If Alpha<=0 Then Alpha:=0.25; If Alpha>1 Then Alpha:=1;
- For T:=1 To MaxTraces Do If Traces[T].Used And (Traces[T].Npts>0) Then Begin
-  Y:=Traces[T].Data[1];
-  For I:=2 To Traces[T].Npts Do Begin
-   Y:=Y+Alpha*(Traces[T].Data[I]-Y); Traces[T].Data[I]:=Y;
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used And (Tr^.Npts>0) Then Begin
+  Y:=Tr^.Data[1];
+  For I:=2 To Tr^.Npts Do Begin
+   Y:=Y+Alpha*(Tr^.Data[I]-Y); Tr^.Data[I]:=Y;
   End;
+ End;
  End;
  Say('LOWPASS approximation done.');
 End;
 
 Procedure SimpleHighPass(Alpha:Single);
-Var T:Integer; I:LongInt; Y,PrevX,X:Single;
+Var T:Integer; I:LongInt; Y,PrevX,X:Single; Tr:PTrace;
 Begin
  If Alpha<=0 Then Alpha:=0.95; If Alpha>1 Then Alpha:=1;
- For T:=1 To MaxTraces Do If Traces[T].Used And (Traces[T].Npts>0) Then Begin
-  Y:=0; PrevX:=Traces[T].Data[1];
-  For I:=2 To Traces[T].Npts Do Begin
-   X:=Traces[T].Data[I];
-   Y:=Alpha*(Y+X-PrevX); Traces[T].Data[I]:=Y; PrevX:=X;
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used And (Tr^.Npts>0) Then Begin
+  Y:=0; PrevX:=Tr^.Data[1];
+  For I:=2 To Tr^.Npts Do Begin
+   X:=Tr^.Data[I];
+   Y:=Alpha*(Y+X-PrevX); Tr^.Data[I]:=Y; PrevX:=X;
   End;
+ End;
  End;
  Say('HIGHPASS approximation done.');
 End;
 
 Procedure DoFFT;
-Var T:Integer; K,J,N:LongInt; Ang,C,S:Real; Re,Im:Real; Tmp:TSampleArray;
+Var T:Integer; K,J,N:LongInt; Ang,C,S:Real; Re,Im:Real; Tmp:TSampleArray; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  N:=Traces[T].Npts;
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  N:=Tr^.Npts;
   If N<1 Then Continue;
-  FftN[T]:=N; FftDelta[T]:=Traces[T].Delta;
+  If Tr^.FftRe=Nil Then New(Tr^.FftRe);
+  If Tr^.FftIm=Nil Then New(Tr^.FftIm);
+  Tr^.FftN:=N; Tr^.FftDelta:=Tr^.Delta;
   For K:=1 To N Do Begin
    Re:=0.0; Im:=0.0;
    For J:=1 To N Do Begin
     Ang:=-2.0*PiValue*(K-1)*(J-1)/N;
     C:=Cos(Ang); S:=Sin(Ang);
-    Re:=Re+Traces[T].Data[J]*C;
-    Im:=Im+Traces[T].Data[J]*S;
+    Re:=Re+Tr^.Data[J]*C;
+    Im:=Im+Tr^.Data[J]*S;
    End;
-   FftRe[T][K]:=Re;
-   FftIm[T][K]:=Im;
+   Tr^.FftRe^[K]:=Re;
+   Tr^.FftIm^[K]:=Im;
    Tmp[K]:=Sqrt(Re*Re+Im*Im);
   End;
-  For K:=1 To N Do Traces[T].Data[K]:=Tmp[K];
-  If (N>0) And (Traces[T].Delta<>0) Then Traces[T].Delta:=1.0/(N*Traces[T].Delta);
-  Traces[T].B:=0.0; UpdateEndTime(Traces[T]);
-  Traces[T].FileName:=Traces[T].FileName+':FFT';
+  For K:=1 To N Do Tr^.Data[K]:=Tmp[K];
+  If (N>0) And (Tr^.Delta<>0) Then Tr^.Delta:=1.0/(N*Tr^.Delta);
+  Tr^.B:=0.0; UpdateEndTime(Tr^);
+  Tr^.FileName:=Tr^.FileName+':FFT';
+ End;
  End;
  Say('FFT done.');
 End;
 
 Procedure DoIFFT;
-Var T:Integer; K,J,N:LongInt; Ang,C,S:Real; Sum:Real; Tmp:TSampleArray;
+Var T:Integer; K,J,N:LongInt; Ang,C,S:Real; Sum:Real; Tmp:TSampleArray; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  N:=FftN[T];
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  N:=Tr^.FftN;
   If N<1 Then Begin Say('IFFT: no saved FFT for a trace.'); Continue; End;
+  If (Tr^.FftRe=Nil) Or (Tr^.FftIm=Nil) Then Begin Say('IFFT: no saved FFT buffers.'); Continue; End;
   For J:=1 To N Do Begin
    Sum:=0.0;
    For K:=1 To N Do Begin
     Ang:=2.0*PiValue*(K-1)*(J-1)/N;
     C:=Cos(Ang); S:=Sin(Ang);
-    Sum:=Sum+FftRe[T][K]*C-FftIm[T][K]*S;
+    Sum:=Sum+Tr^.FftRe^[K]*C-Tr^.FftIm^[K]*S;
    End;
    Tmp[J]:=Sum/N;
   End;
-  Traces[T].Npts:=N;
-  For J:=1 To N Do Traces[T].Data[J]:=Tmp[J];
-  Traces[T].Delta:=FftDelta[T];
-  Traces[T].B:=0.0; UpdateEndTime(Traces[T]);
-  Traces[T].FileName:=Traces[T].FileName+':IFFT';
+  Tr^.Npts:=N;
+  For J:=1 To N Do Tr^.Data[J]:=Tmp[J];
+  Tr^.Delta:=Tr^.FftDelta;
+  Tr^.B:=0.0; UpdateEndTime(Tr^);
+  Tr^.FileName:=Tr^.FileName+':IFFT';
+ End;
  End;
  Say('IFFT done.');
 End;
 
 Procedure ListHdr;
-Var T:Integer; MinV,MaxV,MeanV:Single;
+Var T:Integer; MinV,MaxV,MeanV:Single; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  UpdateStats(Traces[T],MinV,MaxV,MeanV);
-  WriteLn('Trace ',T,' file=',Traces[T].FileName);
-  WriteLn('  npts=',Traces[T].Npts,' delta=',Traces[T].Delta:0:6,' b=',Traces[T].B:0:6,' e=',Traces[T].E:0:6);
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  UpdateStats(Tr^,MinV,MaxV,MeanV);
+  WriteLn('Trace ',T,' file=',Tr^.FileName);
+  WriteLn('  npts=',Tr^.Npts,' delta=',Tr^.Delta:0:6,' b=',Tr^.B:0:6,' e=',Tr^.E:0:6);
   WriteLn('  depmin=',MinV:0:6,' depmax=',MaxV:0:6,' depmen=',MeanV:0:6);
+ End;
  End;
 End;
 
 Procedure PlotAscii;
-Var T:Integer; I,J,Col,N:LongInt; MinV,MaxV,MeanV,V:Single; Line:String;
+Var T:Integer; I,J,Col,N:LongInt; MinV,MaxV,MeanV,V:Single; Line:String; Tr:PTrace;
 Begin
- For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
-  UpdateStats(Traces[T],MinV,MaxV,MeanV);
+ For T:=1 To MaxTraces Do Begin
+  Tr:=TracePtr(T);
+  If (Tr<>Nil) And Tr^.Used Then Begin
+  UpdateStats(Tr^,MinV,MaxV,MeanV);
   If MaxV=MinV Then MaxV:=MinV+1;
-  WriteLn('Trace ',T,' ',Traces[T].FileName);
-  N:=Traces[T].Npts; If N>80 Then N:=80;
+  WriteLn('Trace ',T,' ',Tr^.FileName);
+  N:=Tr^.Npts; If N>80 Then N:=80;
   For I:=1 To N Do Begin
-   V:=Traces[T].Data[I];
+   V:=Tr^.Data[I];
    Col:=1+Trunc((V-MinV)/(MaxV-MinV)*59);
    Line:='';
    For J:=1 To 60 Do If J=Col Then Line:=Line+'*' Else If J=30 Then Line:=Line+'|' Else Line:=Line+' ';
    WriteLn(Line);
   End;
  End;
+ End;
 End;
 
 Procedure GenerateData(Kind:String; N:LongInt; Delta:Single);
-Var Idx:Integer; I:LongInt; X:Real;
+Var Idx:Integer; I:LongInt; X:Real; Tr:PTrace;
 Begin
  Idx:=FirstFreeTrace;
  If Idx=0 Then Begin Say('No free trace slots.'); Exit; End;
+ Tr:=TracePtr(Idx);
+ If Tr=Nil Then Exit;
  If N<1 Then N:=256; If N>MaxSamples Then N:=MaxSamples;
- InitTrace(Traces[Idx]); Traces[Idx].Used:=True; Traces[Idx].FileName:='DATAGEN'; Traces[Idx].Npts:=N; Traces[Idx].Delta:=Delta;
+ InitTrace(Tr^); Tr^.Used:=True; Tr^.FileName:='DATAGEN'; Tr^.Npts:=N; Tr^.Delta:=Delta;
  Randomize;
  For I:=1 To N Do Begin
   X:=2*PiValue*(I-1)/N;
-  If Kind='IMPULSE' Then Begin If I=N Div 2 Then Traces[Idx].Data[I]:=1 Else Traces[Idx].Data[I]:=0; End
-   Else If Kind='STEP' Then Begin If I>N Div 2 Then Traces[Idx].Data[I]:=1 Else Traces[Idx].Data[I]:=0; End
-   Else If Kind='RAMP' Then Traces[Idx].Data[I]:=I/N
+  If Kind='IMPULSE' Then Begin If I=N Div 2 Then Tr^.Data[I]:=1 Else Tr^.Data[I]:=0; End
+   Else If Kind='STEP' Then Begin If I>N Div 2 Then Tr^.Data[I]:=1 Else Tr^.Data[I]:=0; End
+   Else If Kind='RAMP' Then Tr^.Data[I]:=I/N
    Else If Kind='SEISMOGRAM' Then
-    Traces[Idx].Data[I]:=Exp(-0.035*I)*(Sin(0.42*I)+0.45*Sin(1.15*I)+0.18*Sin(2.75*I))
-   Else If Kind='NOISE' Then Traces[Idx].Data[I]:=(Random(20000)-10000)/10000.0
-   Else Traces[Idx].Data[I]:=Sin(X);
+    Tr^.Data[I]:=Exp(-0.035*I)*(Sin(0.42*I)+0.45*Sin(1.15*I)+0.18*Sin(2.75*I))
+   Else If Kind='NOISE' Then Tr^.Data[I]:=(Random(20000)-10000)/10000.0
+   Else Tr^.Data[I]:=Sin(X);
  End;
- UpdateEndTime(Traces[Idx]);
+ UpdateEndTime(Tr^);
  Say('Generated '+Kind+' trace.');
 End;
 
 Procedure DeleteChannel(N:Integer);
+Var Tr:PTrace;
 Begin
- If (N>=1) And (N<=MaxTraces) Then Begin InitTrace(Traces[N]); Say('Channel deleted.'); End
+ Tr:=TracePtr(N);
+ If (N>=1) And (N<=MaxTraces) And (Tr<>Nil) Then Begin InitTrace(Tr^); Say('Channel deleted.'); End
   Else Say('Bad channel.');
 End;
 
 Procedure SortTraces;
-Var I,J:Integer; Tmp:TTrace;
+Var I,J:Integer; Tmp:TTrace; A,B:PTrace;
 Begin
- For I:=1 To MaxTraces-1 Do For J:=I+1 To MaxTraces Do
-  If Traces[J].Used And ((Not Traces[I].Used) Or (Traces[J].FileName<Traces[I].FileName)) Then Begin
-   Tmp:=Traces[I]; Traces[I]:=Traces[J]; Traces[J]:=Tmp;
+ For I:=1 To MaxTraces-1 Do For J:=I+1 To MaxTraces Do Begin
+  A:=TracePtr(I); B:=TracePtr(J);
+  If (A<>Nil) And (B<>Nil) And B^.Used And ((Not A^.Used) Or (B^.FileName<A^.FileName)) Then Begin
+   Tmp:=A^; A^:=B^; B^:=Tmp;
   End;
+ End;
  Say('SORT done.');
 End;
 
@@ -751,7 +944,7 @@ End;
 Procedure DispatchCommand(N:Integer; Var Tok:TTokens); Forward;
 
 Procedure DispatchCommand(N:Integer; Var Tok:TTokens);
-Var Cmd,S:String; I:Integer; R:Single; L:LongInt;
+Var Cmd,S:String; I:Integer; R:Single; L:LongInt; Tr:PTrace;
 Begin
  Cmd:=UpCaseStr(Tok[1]);
  If Cmd='' Then Exit;
@@ -766,13 +959,28 @@ Begin
  If Cmd='MESSAGE' Then Begin S:=''; For I:=2 To N Do S:=S+Tok[I]+' '; Say(S); Exit; End;
  If Cmd='PAUSE' Then Begin Say('Press ENTER.'); ReadLn; Exit; End;
  If Cmd='WAIT' Then Begin WaitMs(ToInt(Tok[2],1)*1000); Exit; End;
- If Cmd='HISTORY' Then Begin For I:=1 To HistCount Do WriteLn(I:3,' ',Hist[I]); Exit; End;
+ If Cmd='HISTORY' Then Begin ShowHistory; Exit; End;
  If Cmd='SETBB' Then Begin If N>=3 Then SetBBVar(Tok[2],Tok[3]); Exit; End;
- If Cmd='GETBB' Then Begin If N>=2 Then Say(GetBBVar(Tok[2])) Else For I:=1 To BBCount Do Say(BB[I].Name+'='+BB[I].Value); Exit; End;
+ If Cmd='GETBB' Then Begin
+  If N>=2 Then Say(GetBBVar(Tok[2])) Else
+  For I:=1 To BBCount Do Say(BB[I].Name+'='+BB[I].Value);
+  Exit;
+ End;
  If Cmd='UNSETBB' Then Begin If N>=2 Then UnsetBBVar(Tok[2]); Exit; End;
  If Cmd='TRANSCRIPT' Then Begin
-  If (N>=2) And (UpCaseStr(Tok[2])='OFF') Then Begin If TranscriptOn Then Close(TranscriptFile); TranscriptOn:=False; Say('Transcript off.'); End
-  Else Begin If N>=2 Then S:=Tok[2] Else S:='sac.trn'; Assign(TranscriptFile,S); Rewrite(TranscriptFile); TranscriptOn:=True; Say('Transcript on: '+S); End;
+  If (N>=2) And (UpCaseStr(Tok[2])='OFF') Then Begin
+   If TranscriptOn Then Close(TranscriptFile);
+   TranscriptOn:=False;
+   Say('Transcript off.');
+  End
+   Else
+  Begin
+   If N>=2 Then S:=Tok[2]
+           Else S:='sac.trn';
+   Assign(TranscriptFile,S);
+   Rewrite(TranscriptFile);
+   TranscriptOn:=True; Say('Transcript on: '+S);
+  End;
   Exit;
  End;
  If Cmd='SYSTEMCOMMAND' Then Begin
@@ -807,7 +1015,13 @@ Begin
   GenerateData(S,ToInt(Tok[3],256),ToReal(Tok[4],1.0)); Exit;
  End;
  If Cmd='LISTHDR' Then Begin ListHdr; Exit; End;
- If Cmd='FILEID' Then Begin For I:=1 To MaxTraces Do If Traces[I].Used Then Say(Traces[I].FileName); Exit; End;
+ If Cmd='FILEID' Then Begin
+  For I:=1 To MaxTraces Do Begin
+   Tr:=TracePtr(I);
+   If (Tr<>Nil) And Tr^.Used Then Say(Tr^.FileName);
+  End;
+  Exit;
+ End;
  If Cmd='FILENUMBER' Then Begin Say('Files in memory: '+Chr(Ord('0')+TraceCount)); Exit; End;
  If Cmd='DELETECHANNEL' Then Begin DeleteChannel(ToInt(Tok[2],1)); Exit; End;
  If Cmd='ERASE' Then Begin ClearTraces; Say('Workspace cleared.'); Exit; End;
@@ -815,12 +1029,15 @@ Begin
  If (Cmd='ROLLBACK') Or (Cmd='RECALLTRACE') Then Begin RollbackTraces; Exit; End;
  If Cmd='COPYHDR' Then Begin Unsupported(Cmd); Exit; End;
  If Cmd='CHNHDR' Then Begin
-  If N>=3 Then For I:=1 To MaxTraces Do If Traces[I].Used Then Begin
-   If UpCaseStr(Tok[2])='DELTA' Then Traces[I].Delta:=ToReal(Tok[3],Traces[I].Delta);
-   If UpCaseStr(Tok[2])='B' Then Traces[I].B:=ToReal(Tok[3],Traces[I].B);
-   If UpCaseStr(Tok[2])='O' Then Traces[I].O:=ToReal(Tok[3],Traces[I].O);
-   If UpCaseStr(Tok[2])='A' Then Traces[I].A:=ToReal(Tok[3],Traces[I].A);
-   UpdateEndTime(Traces[I]);
+  If N>=3 Then For I:=1 To MaxTraces Do Begin
+   Tr:=TracePtr(I);
+   If (Tr<>Nil) And Tr^.Used Then Begin
+    If UpCaseStr(Tok[2])='DELTA' Then Tr^.Delta:=ToReal(Tok[3],Tr^.Delta);
+    If UpCaseStr(Tok[2])='B' Then Tr^.B:=ToReal(Tok[3],Tr^.B);
+    If UpCaseStr(Tok[2])='O' Then Tr^.O:=ToReal(Tok[3],Tr^.O);
+    If UpCaseStr(Tok[2])='A' Then Tr^.A:=ToReal(Tok[3],Tr^.A);
+    UpdateEndTime(Tr^);
+   End;
   End;
   Say('CHNHDR done.'); Exit;
  End;
@@ -856,7 +1073,13 @@ Begin
  If Cmd='CUTERR' Then Begin If N>=2 Then CutErrMode:=UpCaseStr(Tok[2]); Say('CUTERR '+CutErrMode); Exit; End;
  If Cmd='CUTIM' Then Begin If N>=3 Then CutTraces(ToReal(Tok[2],0),ToReal(Tok[3],0)); Exit; End;
  If Cmd='SORT' Then Begin SortTraces; Exit; End;
- If Cmd='SYNCHRONIZE' Then Begin For I:=1 To MaxTraces Do If Traces[I].Used Then Traces[I].B:=0; Say('SYNCHRONIZE done.'); Exit; End;
+ If Cmd='SYNCHRONIZE' Then Begin
+  For I:=1 To MaxTraces Do Begin
+   Tr:=TracePtr(I);
+   If (Tr<>Nil) And Tr^.Used Then Tr^.B:=0;
+  End;
+  Say('SYNCHRONIZE done.'); Exit;
+ End;
  If Cmd='ROTATE' Then Begin Unsupported(Cmd+' 3-component operation'); Exit; End;
 
  If (Cmd='PLOT') Or (Cmd='PLOT1') Or (Cmd='PLOT2') Or (Cmd='PLOTC') Or
@@ -880,7 +1103,11 @@ Begin
   Say(Cmd+' option stored/accepted in console mode.'); Exit;
  End;
 
- If (Cmd='MACRO') Or (Cmd='LOAD') Or (Cmd='CAPF') Then Begin If N>=2 Then RunScript(Tok[2]) Else Say('Macro file missing.'); Exit; End;
+ If (Cmd='MACRO') Or (Cmd='LOAD') Or (Cmd='CAPF') Then Begin
+  If N>=2 Then RunScript(Tok[2])
+          Else Say('Macro file missing.');
+  Exit;
+ End;
  If (Cmd='INSTALLMACRO') Or (Cmd='SETMACRO') Then Begin Say(Cmd+' accepted; use MACRO filename to execute.'); Exit; End;
  If Cmd='EVALUATE' Then Begin If N>=4 Then SetBBVar(Tok[2],Tok[4]); Exit; End;
  If Cmd='REPORT' Then Begin ListHdr; Exit; End;
@@ -926,10 +1153,10 @@ Begin
 End;
 
 Procedure Init;
-Var I:Integer;
 Begin
- For I:=1 To MaxTraces Do Begin InitTrace(Traces[I]); InitTrace(Saved[I]); End;
- BBCount:=0; HistCount:=0; Running:=True; InSub:=False;
+ CreateTraceList(Traces);
+ CreateTraceList(Saved);
+ BBCount:=0; HistCount:=0; HistFirst:=Nil; HistLast:=Nil; Running:=True; InSub:=False;
  CutOn:=False; CutB:=0; CutE:=0; ReadErrMode:='WARNING'; CutErrMode:='WARNING';
  TranscriptOn:=False;
 End;
