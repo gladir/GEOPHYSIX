@@ -73,6 +73,17 @@ Begin
  TrimStr:=S;
 End;
 
+Function FileExt(S:String):String;
+Var I:Integer; E:String;
+Begin
+ E:='';
+ For I:=Length(S) Downto 1 Do Begin
+  If S[I]='.' Then Begin E:=Copy(S,I,Length(S)-I+1); Break; End;
+  If (S[I]='\') Or (S[I]='/') Or (S[I]=':') Then Break;
+ End;
+ FileExt:=UpCaseStr(E);
+End;
+
 Function Tokenize(Line:String; Var T:TTokens):Integer;
 Var I,N:Integer; Q:Boolean; Cur:String; C:Char;
 Begin
@@ -263,7 +274,7 @@ Const
  L1='|3C|ABOUT|ABS|ADD|ADDF|APK|ARRAYMAP|AXES|BANDPASS|BANDREJ|BBFK|BEAM|BEGINDEVICES|BEGINFRAME|BEGINWINDOW|BENIOFF|BINOPERR|BORDER|CAPF|';
  L2='|CHNHDR|CHPF|COLOR|COMCOR|CONTOUR|CONVERT|CONVOLVE|COPYHDR|CORRELATE|COMMIT|RECALLTRACE|ROLLBACK|CUT|CUTERR|CUTIM|DATAGEN|';
  L3='|DECIMATE|DELETECHANNEL|DIF|DIV|DIVF|DIVOMEGA|ECHO|ENDDEVICES|ENDFRAME|ENVELOPE|ERASE|EVALUATE|EXP|EXP10|FFT|FILEID|FILENUMBER|';
- L4='|FILTERDESIGN|FIR|FLOOR|FUNCGEN|GETBB|GRAYSCALE|GRID|GTEXT|HANNING|HELP|HIGHPASS|HILBERT|HISTORY|IFFT|IMAGE|INICM|INSTALLMACRO|';
+ L4='|FG|FILTERDESIGN|FIR|FLOOR|FUNCGEN|GETBB|GRAYSCALE|GRID|GTEXT|HANNING|HELP|HIGHPASS|HILBERT|HISTORY|IFFT|IMAGE|INICM|INSTALLMACRO|';
  L5='|INT|INTERPOLATE|KEEPAM|KHRONHITE|LINE|LINEFIT|LINLIN|LINLOG|LISTHDR|LOAD|LOADCTABLE|LOG|LOG10|LOGLAB|LOGLIN|LOGLOG|LOWPASS|';
  L6='|MACRO|MAP|MARKPTP|MARKTIMES|MARKVALUE|MAT|MATHOP|MERGE|MESSAGE|MTW|MUL|MULF|MULOMEGA|PLOTC|NULL|OAPF|OHPF|PAUSE|';
  L7='|PICKAUTHOR|PICKPHASE|PICKPREFS|PICKS|PLABEL|PLOT|PLOT1|PLOT2|PLOTALPHA|PLOTCTABLE|PLOTDY|PLOTPK|PLOTPKTABLE|PLOTPM|PLOTSP|';
@@ -293,7 +304,7 @@ Begin
  Say('COLOR COMCOR CONTOUR CONVERT CONVOLVE COPYHDR CORRELATE COMMIT RECALLTRACE ROLLBACK');
  Say('CUT CUTERR CUTIM DATAGEN DECIMATE DELETECHANNEL DIF DIV DIVF DIVOMEGA ECHO');
  Say('ENDDEVICES ENDFRAME ENVELOPE ERASE EVALUATE EXP EXP10 FFT FILEID FILENUMBER');
- Say('FILTERDESIGN FIR FLOOR FUNCGEN GETBB GRAYSCALE GRID GTEXT HANNING HELP HIGHPASS');
+ Say('FG FILTERDESIGN FIR FLOOR FUNCGEN GETBB GRAYSCALE GRID GTEXT HANNING HELP HIGHPASS');
  Say('HILBERT HISTORY IFFT IMAGE INICM INSTALLMACRO INT INTERPOLATE KEEPAM KHRONHITE');
  Say('LINE LINEFIT LINLIN LINLOG LISTHDR LOAD LOADCTABLE LOG LOG10 LOGLAB LOGLIN LOGLOG');
  Say('LOWPASS MACRO MAP MARKPTP MARKTIMES MARKVALUE MAT MATHOP MERGE MESSAGE MTW MUL');
@@ -638,6 +649,8 @@ Begin
   If Kind='IMPULSE' Then Begin If I=N Div 2 Then Traces[Idx].Data[I]:=1 Else Traces[Idx].Data[I]:=0; End
    Else If Kind='STEP' Then Begin If I>N Div 2 Then Traces[Idx].Data[I]:=1 Else Traces[Idx].Data[I]:=0; End
    Else If Kind='RAMP' Then Traces[Idx].Data[I]:=I/N
+   Else If Kind='SEISMOGRAM' Then
+    Traces[Idx].Data[I]:=Exp(-0.035*I)*(Sin(0.42*I)+0.45*Sin(1.15*I)+0.18*Sin(2.75*I))
    Else If Kind='NOISE' Then Traces[Idx].Data[I]:=(Random(20000)-10000)/10000.0
    Else Traces[Idx].Data[I]:=Sin(X);
  End;
@@ -673,6 +686,12 @@ Begin
   ExecuteLine(Line);
  End;
  Close(F);
+End;
+
+Procedure LoadStartupArgument(FileName:String);
+Begin
+ If FileExt(FileName)='.SAC' Then ReadSacBinary(FileName)
+  Else RunScript(FileName);
 End;
 
 Procedure DispatchCommand(N:Integer; Var Tok:TTokens); Forward;
@@ -729,7 +748,7 @@ Begin
   R:=1.0; If N>=4 Then R:=ToReal(Tok[4],1.0);
   GenerateData(S,L,R); Exit;
  End;
- If Cmd='FUNCGEN' Then Begin
+ If (Cmd='FUNCGEN') Or (Cmd='FG') Then Begin
   S:='SINE'; If N>=2 Then S:=UpCaseStr(Tok[2]);
   GenerateData(S,ToInt(Tok[3],256),ToReal(Tok[4],1.0)); Exit;
  End;
@@ -841,8 +860,9 @@ Begin
  WriteLn('SAC - Cette commande permet de lancer un clone console SAC (Seismic Analysis Code).');
  WriteLn;
  WriteLn('Syntaxe: SAC [macro.sac]');
+ WriteLn('         SAC fichier.sac [autre.sac ...]');
  WriteLn;
- WriteLn('Commandes utiles implementees: READ WRITE READTABLE LISTHDR DATAGEN FUNCGEN');
+ WriteLn('Commandes utiles implementees: READ WRITE READTABLE LISTHDR DATAGEN FG FUNCGEN');
  WriteLn('ADD SUB MUL DIV ADDF SUBF MULF DIVF ABS SQR SQRT EXP LOG RMEAN RTREND');
  WriteLn('DIF INT SMOOTH TAPER DECIMATE LOWPASS HIGHPASS CUT PLOT SETBB GETBB MACRO');
  WriteLn('Toutes les commandes SAC listees dans le manuel sont reconnues; les modules');
@@ -858,14 +878,17 @@ Begin
  TranscriptOn:=False;
 End;
 
-Var Line:String;
+Var
+ Line:String;
+ I:Integer;
 
 BEGIN
  Init;
  If (ParamStr(1)='/?') Or (ParamStr(1)='--help') Or (ParamStr(1)='-h') Or
     (ParamStr(1)='/h') Or (ParamStr(1)='/H') Then Begin Help; Halt; End;
  Say('SAC - tapez HELP pour les commandes, QUIT pour quitter.');
- If ParamCount>=1 Then RunScript(ParamStr(1));
+ If ParamCount>=1 Then
+  For I:=1 To ParamCount Do LoadStartupArgument(ParamStr(I));
  While Running Do Begin
   Write('SAC> ');
   ReadLn(Line);
