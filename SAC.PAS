@@ -49,6 +49,9 @@ Type
 Var
  Traces:Array[1..MaxTraces] Of TTrace;
  Saved:Array[1..MaxTraces] Of TTrace;
+ FftRe,FftIm:Array[1..MaxTraces] Of TSampleArray;
+ FftN:Array[1..MaxTraces] Of LongInt;
+ FftDelta:Array[1..MaxTraces] Of Single;
  BB:Array[1..MaxBB] Of TBBVar;
  Hist:Array[1..MaxHist] Of String;
  BBCount,HistCount:Integer;
@@ -607,6 +610,57 @@ Begin
  Say('HIGHPASS approximation done.');
 End;
 
+Procedure DoFFT;
+Var T:Integer; K,J,N:LongInt; Ang,C,S:Real; Re,Im:Real; Tmp:TSampleArray;
+Begin
+ For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
+  N:=Traces[T].Npts;
+  If N<1 Then Continue;
+  FftN[T]:=N; FftDelta[T]:=Traces[T].Delta;
+  For K:=1 To N Do Begin
+   Re:=0.0; Im:=0.0;
+   For J:=1 To N Do Begin
+    Ang:=-2.0*PiValue*(K-1)*(J-1)/N;
+    C:=Cos(Ang); S:=Sin(Ang);
+    Re:=Re+Traces[T].Data[J]*C;
+    Im:=Im+Traces[T].Data[J]*S;
+   End;
+   FftRe[T][K]:=Re;
+   FftIm[T][K]:=Im;
+   Tmp[K]:=Sqrt(Re*Re+Im*Im);
+  End;
+  For K:=1 To N Do Traces[T].Data[K]:=Tmp[K];
+  If (N>0) And (Traces[T].Delta<>0) Then Traces[T].Delta:=1.0/(N*Traces[T].Delta);
+  Traces[T].B:=0.0; UpdateEndTime(Traces[T]);
+  Traces[T].FileName:=Traces[T].FileName+':FFT';
+ End;
+ Say('FFT done.');
+End;
+
+Procedure DoIFFT;
+Var T:Integer; K,J,N:LongInt; Ang,C,S:Real; Sum:Real; Tmp:TSampleArray;
+Begin
+ For T:=1 To MaxTraces Do If Traces[T].Used Then Begin
+  N:=FftN[T];
+  If N<1 Then Begin Say('IFFT: no saved FFT for a trace.'); Continue; End;
+  For J:=1 To N Do Begin
+   Sum:=0.0;
+   For K:=1 To N Do Begin
+    Ang:=2.0*PiValue*(K-1)*(J-1)/N;
+    C:=Cos(Ang); S:=Sin(Ang);
+    Sum:=Sum+FftRe[T][K]*C-FftIm[T][K]*S;
+   End;
+   Tmp[J]:=Sum/N;
+  End;
+  Traces[T].Npts:=N;
+  For J:=1 To N Do Traces[T].Data[J]:=Tmp[J];
+  Traces[T].Delta:=FftDelta[T];
+  Traces[T].B:=0.0; UpdateEndTime(Traces[T]);
+  Traces[T].FileName:=Traces[T].FileName+':IFFT';
+ End;
+ Say('IFFT done.');
+End;
+
 Procedure ListHdr;
 Var T:Integer; MinV,MaxV,MeanV:Single;
 Begin
@@ -788,7 +842,9 @@ Begin
  If Cmd='HIGHPASS' Then Begin SimpleHighPass(ToReal(Tok[2],0.95)); Exit; End;
  If Cmd='BANDPASS' Then Begin SimpleHighPass(0.95); SimpleLowPass(0.25); Exit; End;
  If Cmd='BANDREJ' Then Begin Unsupported(Cmd+' exact filter'); Exit; End;
- If (Cmd='ENVELOPE') Or (Cmd='HILBERT') Or (Cmd='FFT') Or (Cmd='IFFT') Or
+ If Cmd='FFT' Then Begin DoFFT; Exit; End;
+ If Cmd='IFFT' Then Begin DoIFFT; Exit; End;
+ If (Cmd='ENVELOPE') Or (Cmd='HILBERT') Or
     (Cmd='CONVOLVE') Or (Cmd='CORRELATE') Or (Cmd='WHITEN') Or (Cmd='WIENER') Or
     (Cmd='INTERPOLATE') Or (Cmd='MERGE') Or (Cmd='STRETCH') Or (Cmd='UNWRAP') Or
     (Cmd='DIVOMEGA') Or (Cmd='MULOMEGA') Then Begin Unsupported(Cmd+' numerical module'); Exit; End;
