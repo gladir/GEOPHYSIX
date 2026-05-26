@@ -42,6 +42,10 @@ Voici la liste des différents fichiers proposés dans Ecologix :
 		<td><b>SEISMIC.PAS</b></td>
 		<td>Cette commande permet de calculer la vitesse des ondes P et S en fonction de la densité et des modules élastiques.</td>
 	</tr>
+	<tr>
+		<td><b>SUFILTER.PAS</b></td>
+		<td>Cette commande permet d'appliquer un filtre à phase nulle et à variation sinusoidale carrée.</td>
+	</tr>
 </table>
 
 <h2>Compilation</h2>
