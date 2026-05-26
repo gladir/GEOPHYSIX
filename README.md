@@ -50,6 +50,10 @@ Voici la liste des différents fichiers proposés dans Ecologix :
 		<td><b>SUFILTER.PAS</b></td>
 		<td>Cette commande permet d'appliquer un filtre à phase nulle et à variation sinusoidale carrée.</td>
 	</tr>
+	<tr>
+		<td><b>SUPLANE.PAS</b></td>
+		<td>Cette commande permet de créer un fichier de données de décalage commun avec jusqu'à 3 plans.</td>
+	</tr>
 </table>
 
 <h2>Compilation</h2>
