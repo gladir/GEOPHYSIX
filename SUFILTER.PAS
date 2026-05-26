@@ -51,8 +51,8 @@ End;
 
 Procedure Help;
 Begin
- WriteLn('SUFILTER - Cette commande permet d''appliquer un filtre à phase nulle ',
-         'et à variation sinusoïdale carrée.');
+ WriteLn('SUFILTER - Cette commande permet d''appliquer un filtre '+#133+' phase nulle ',
+         'et '+#133+' variation sinuso'+#139+'dale carr'+#130+'e.');
  WriteLn;
  WriteLn('Syntaxe : SUFILTER <stdin >stdout [optional parameters]');
  WriteLn;
