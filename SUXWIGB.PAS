@@ -172,8 +172,8 @@ End;
 
 Procedure Help;
 Begin
- WriteLn('SUXWIGB - Cette commande permet de créer un graphique ondulé de style ',
-         'X-windows des données SU.');
+ WriteLn('SUXWIGB - Cette commande permet de cr'+#130+'er un graphique ',
+         'ondul'+#130+' de style X-windows des donn'+#130+'es SU.');
  WriteLn;
  WriteLn('Syntaxe : SUXWIGB <stdin [parametres optionnels]');
  WriteLn('          SUXWIGB in=fichier.su [parametres optionnels]');
