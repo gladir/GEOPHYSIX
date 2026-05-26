@@ -54,6 +54,11 @@ Voici la liste des différents fichiers proposés dans Ecologix :
 		<td><b>SUPLANE.PAS</b></td>
 		<td>Cette commande permet de créer un fichier de données de décalage commun avec jusqu'à 3 plans.</td>
 	</tr>
+	<tr>
+		<td><b>SUXWIGB.PAS</b></td>
+		<td>Cette commande permet de créer un graphique ondulé de style X-windows des données SU.</td>
+	</tr>
+	</tr>
 </table>
 
 <h2>Compilation</h2>
